@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AudioMixer" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#0E1016</item>
+        <item name="android:statusBarColor">#0E1016</item>
+        <item name="android:navigationBarColor">#0E1016</item>
+        <item name="android:colorAccent">#00D3A7</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
