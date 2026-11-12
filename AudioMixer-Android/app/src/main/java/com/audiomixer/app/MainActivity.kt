@@ -26,11 +26,15 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.accessibility.AccessibilityManager
+import android.widget.AdapterView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
@@ -42,7 +46,7 @@ import java.util.concurrent.TimeUnit
 
 class MainActivity : Activity() {
 
-    private class Row(val track: Track, val info: View, val meta: TextView, val tag: TextView)
+    private class Row(val track: Track, val box: LinearLayout, val info: View, val meta: TextView, val tag: TextView)
     private class Published(val uri: Uri?, val where: String)
 
     private val tracks = ArrayList<Track>()
@@ -52,6 +56,10 @@ class MainActivity : Activity() {
     private var pendingReplace = false
     private var askedStorage = false
     private var seeking = false
+    private var syncing = false
+    private var quietUntil = 0L
+    private var wasPlaying = false
+    private var lastNames: List<String> = emptyList()
     @Volatile private var cancelExport = false
 
     private lateinit var player: MixPlayer
@@ -65,23 +73,34 @@ class MainActivity : Activity() {
     private lateinit var progress: ProgressBar
     private lateinit var importBtn: Button
     private lateinit var addBtn: Button
+    private lateinit var summaryBtn: Button
     private lateinit var play1Btn: Button
     private lateinit var play2Btn: Button
     private lateinit var finalBtn: Button
-    private lateinit var markBtn: Button
     private lateinit var saveBtn: Button
+    private lateinit var fileSpinner: Spinner
+    private lateinit var modeSpinner: Spinner
+    private lateinit var chkAfter: CheckBox
+    private lateinit var chkBefore: CheckBox
+    private lateinit var chkMix: CheckBox
+    private lateinit var chkOver: CheckBox
     private lateinit var posSlider: SeekBar
     private lateinit var posValue: TextView
     private lateinit var posInfo: TextView
+    private lateinit var posDown: Button
+    private lateinit var posUp: Button
     private lateinit var volSlider: SeekBar
     private lateinit var volValue: TextView
     private lateinit var volInfo: TextView
+    private lateinit var volDown: Button
+    private lateinit var volUp: Button
+    private lateinit var chkMute: CheckBox
+    private lateinit var chkLock: CheckBox
+    private lateinit var markBtn: Button
+    private lateinit var removeBtn: Button
     private lateinit var totalInfo: TextView
     private lateinit var headInfo: TextView
     private lateinit var finalSeek: SeekBar
-
-    private var suppressPos = false
-    private var suppressVol = false
 
     private val ticker = object : Runnable {
         override fun run() {
@@ -113,6 +132,7 @@ class MainActivity : Activity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        lastNames = emptyList()
         setContentView(buildUi())
         refreshAll()
         onPlayerState()
@@ -120,7 +140,7 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
-        player.pause() // no background service: pause cleanly instead of being killed
+        player.pause()
     }
 
     override fun onDestroy() {
@@ -139,13 +159,12 @@ class MainActivity : Activity() {
     private fun buildUi(): View {
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.setPadding(UiKit.dp(this, 14f), UiKit.dp(this, 16f), UiKit.dp(this, 14f), UiKit.dp(this, 20f))
+        root.setPadding(UiKit.dp(this, 14f), UiKit.dp(this, 16f), UiKit.dp(this, 14f), UiKit.dp(this, 24f))
 
         scroll = ScrollView(this)
         scroll.setBackgroundColor(Palette.BG)
         scroll.clipToPadding = false
         scroll.addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        // Android 15/16 draw edge to edge: keep content clear of the system bars.
         scroll.setOnApplyWindowInsetsListener { v, insets ->
             val l: Int
             val t: Int
@@ -165,48 +184,41 @@ class MainActivity : Activity() {
         val title = UiKit.text(this, "Audio Mixer", 26f, Palette.TEXT, true)
         title.isAccessibilityHeading = true
         root.addView(title)
-        root.addView(UiKit.hint(this, "Merge, override and mix any audio format — live."), UiKit.lp(this, 2f, 12f))
-
-        timeline = TimelineView(this)
-        val tlWrap = LinearLayout(this)
-        tlWrap.orientation = LinearLayout.VERTICAL
-        tlWrap.background = UiKit.bg(Palette.CARD2, 12f, Palette.LINE, 1f, this)
-        tlWrap.addView(timeline)
-        root.addView(tlWrap, UiKit.lp(this, 0f, 6f))
-        root.addView(UiKit.hint(this, "Timeline: one lane per file. Gold outline means marked (locked)."), UiKit.lp(this, 0f, 12f))
-
-        statusText = UiKit.text(this, "No audio yet. Start with Import File.", 14f, Palette.TEXT)
-        root.addView(statusText)
+        statusText = UiKit.text(this, "Welcome. Press Import File to choose your first audio.", 15f, Palette.GOLD)
+        statusText.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_NONE
+        root.addView(statusText, UiKit.lp(this, 4f, 6f))
         progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         progress.max = 100
         progress.progressTintList = ColorStateList.valueOf(Palette.ACCENT)
         progress.visibility = View.GONE
         progress.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
         root.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UiKit.dp(this, 5f)).also {
-            it.topMargin = UiKit.dp(this, 6f); it.bottomMargin = UiKit.dp(this, 10f)
+            it.bottomMargin = UiKit.dp(this, 8f)
         })
 
-        // 1 + 2 — import / add another
+        // ---- 1. Files
         val filesCard = UiKit.card(this)
-        filesCard.addView(UiKit.sectionTitle(this, "1 · 2", "IMPORT FILES", "Import files"))
+        filesCard.addView(UiKit.sectionTitle(this, "1", "FILES", "Step 1. Files"))
         importBtn = UiKit.button(this, "Import File", true)
+        importBtn.contentDescription = "Import File. Choose the first audio from your file manager"
         importBtn.setOnClickListener { onImportClicked() }
         filesCard.addView(importBtn, UiKit.lp(this, 0f, 8f))
         addBtn = UiKit.button(this, "Add Another File", false)
         addBtn.setOnClickListener { pendingReplace = false; pickFile() }
-        filesCard.addView(addBtn, UiKit.lp(this, 0f, 4f))
-        filesCard.addView(
-            UiKit.hint(this, "Every audio format is accepted: MP3, WAV, M4A, AAC, FLAC, OGG, OPUS, WMA, AMR, MP4 audio, 3GP audio and more. Tap a file to select it for the sliders."),
-            UiKit.lp(this, 0f, 10f)
-        )
+        filesCard.addView(addBtn, UiKit.lp(this, 0f, 8f))
+        summaryBtn = UiKit.button(this, "Read Mix Summary", false)
+        summaryBtn.contentDescription = "Read mix summary. Lists every file, how it is placed and its volume"
+        summaryBtn.setOnClickListener { showSummary() }
+        filesCard.addView(summaryBtn, UiKit.lp(this, 0f, 6f))
+        filesCard.addView(UiKit.hint(this, "All audio formats are accepted. The last added file is selected automatically for the settings in step 3."), UiKit.lp(this, 0f, 8f))
         fileList = LinearLayout(this)
         fileList.orientation = LinearLayout.VERTICAL
         filesCard.addView(fileList)
         root.addView(filesCard)
 
-        // 3 — the only two preview play buttons
+        // ---- 2. Play one file
         val playCard = UiKit.card(this)
-        playCard.addView(UiKit.sectionTitle(this, "3", "PLAY ONE FILE", "Play one file"))
+        playCard.addView(UiKit.sectionTitle(this, "2", "PLAY ONE FILE", "Step 2. Play one file"))
         val playRow = UiKit.row(this)
         play1Btn = UiKit.button(this, "Play 1", false)
         play2Btn = UiKit.button(this, "Play 2", false)
@@ -215,53 +227,148 @@ class MainActivity : Activity() {
         playRow.addView(play1Btn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.rightMargin = UiKit.dp(this, 8f) })
         playRow.addView(play2Btn, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         playCard.addView(playRow)
-        playCard.addView(UiKit.hint(this, "Play 1 plays the first audio only. Play 2 plays the last added audio only."), UiKit.lp(this, 8f))
+        playCard.addView(UiKit.hint(this, "Play 1 plays only the first audio. Play 2 plays only the last added audio, to check it was added correctly."), UiKit.lp(this, 8f))
         root.addView(playCard)
 
-        // 4 — merge / override slider
-        val posCard = UiKit.card(this)
-        posCard.addView(UiKit.sectionTitle(this, "4", "MERGE / OVERRIDE SLIDER", "Merge and override slider"))
-        posValue = UiKit.text(this, "50", 30f, Palette.ACCENT, true)
+        // ---- 3. Settings for the selected file
+        val set = UiKit.card(this)
+        set.addView(UiKit.sectionTitle(this, "3", "SETTINGS OF THE SELECTED FILE", "Step 3. Settings of the selected file"))
+
+        set.addView(UiKit.subHeading(this, "Selected file"))
+        fileSpinner = UiKit.spinner(this, "Selected file. Choose which file the settings below change")
+        fileSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (syncing || pos == activeIndex || pos !in tracks.indices) return
+                selectIndex(pos, true)
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        set.addView(fileSpinner, UiKit.lp(this))
+
+        set.addView(UiKit.subHeading(this, "Placement: merge, mix or override"))
+        modeSpinner = UiKit.spinner(this, "Placement mode combo box")
+        modeSpinner.adapter = DarkAdapter(this, MODE_LABELS)
+        modeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                if (syncing) return
+                val t = activeTrack() ?: return
+                if (t.anchor || t.locked || pos == modeOf(t.slider)) return
+                applyMode(t, pos)
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        set.addView(modeSpinner, UiKit.lp(this, 0f, 4f))
+        chkAfter = UiKit.check(this, "Merge after: play right after, no gap")
+        chkBefore = UiKit.check(this, "Merge before: play first, then the first file")
+        chkMix = UiKit.check(this, "Mix: play together on top")
+        chkOver = UiKit.check(this, "Override: partly overlap, use the slider")
+        val checks = listOf(chkAfter, chkBefore, chkMix, chkOver)
+        for ((mode, c) in checks.withIndex()) {
+            c.setOnCheckedChangeListener { _, checked ->
+                if (syncing) return@setOnCheckedChangeListener
+                val t = activeTrack() ?: return@setOnCheckedChangeListener
+                if (t.anchor || t.locked) { syncSettings(); return@setOnCheckedChangeListener }
+                if (!checked) {
+                    syncSettings()
+                    say("One placement is always active. Check another one to change it")
+                } else applyMode(t, mode)
+            }
+            set.addView(c, UiKit.lp(this))
+        }
+
+        set.addView(UiKit.subHeading(this, "Position slider, 0 to 100"))
+        posValue = UiKit.text(this, "50", 28f, Palette.ACCENT, true)
         posValue.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        posCard.addView(posValue)
+        set.addView(posValue)
         posInfo = UiKit.hint(this, "")
-        posCard.addView(posInfo, UiKit.lp(this, 0f, 6f))
+        set.addView(posInfo, UiKit.lp(this, 0f, 4f))
         posSlider = UiKit.slider(this)
         posSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                if (!suppressPos) onPositionSlider(value)
+                if (!syncing) onPositionSlider(value)
             }
             override fun onStartTrackingTouch(sb: SeekBar?) {}
             override fun onStopTrackingTouch(sb: SeekBar?) {}
         })
-        posCard.addView(posSlider, UiKit.lp(this))
-        posCard.addView(
-            UiKit.hint(this, "100: the file starts exactly where everything before it ends. 50: full override on top. 0: the file plays completely before the first. Moves live while Final Play runs."),
-            UiKit.lp(this, 8f)
-        )
-        root.addView(posCard)
+        set.addView(posSlider, UiKit.lp(this))
+        val posRow = UiKit.row(this)
+        posDown = UiKit.button(this, "Earlier −1", false)
+        posUp = UiKit.button(this, "Later +1", false)
+        posDown.contentDescription = "Move earlier by one step"
+        posUp.contentDescription = "Move later by one step"
+        posDown.setOnClickListener { nudgePos(-1) }
+        posUp.setOnClickListener { nudgePos(1) }
+        posRow.addView(posDown, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.rightMargin = UiKit.dp(this, 8f) })
+        posRow.addView(posUp, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        set.addView(posRow, UiKit.lp(this, 4f))
+        set.addView(UiKit.hint(this, "100 = exactly after everything before it. 50 = on top, together. 0 = plays completely before the first file. In between = partial override. Changes are heard instantly while Final Play runs."), UiKit.lp(this, 6f))
 
-        // 5 — add mark
-        val markCard = UiKit.card(this)
-        markCard.addView(UiKit.sectionTitle(this, "5", "ADD MARK / LOCK", "Add mark, lock"))
+        set.addView(UiKit.subHeading(this, "Volume of this file, 0 to 100"))
+        volValue = UiKit.text(this, "100 %", 28f, Palette.GOLD, true)
+        volValue.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        set.addView(volValue)
+        volInfo = UiKit.hint(this, "")
+        set.addView(volInfo, UiKit.lp(this, 0f, 4f))
+        volSlider = UiKit.slider(this)
+        volSlider.progressTintList = ColorStateList.valueOf(Palette.GOLD)
+        volSlider.thumbTintList = ColorStateList.valueOf(Palette.GOLD)
+        volSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                if (!syncing) onVolumeSlider(value)
+            }
+            override fun onStartTrackingTouch(sb: SeekBar?) {}
+            override fun onStopTrackingTouch(sb: SeekBar?) {}
+        })
+        set.addView(volSlider, UiKit.lp(this))
+        val volRow = UiKit.row(this)
+        volDown = UiKit.button(this, "Quieter −5", false)
+        volUp = UiKit.button(this, "Louder +5", false)
+        volDown.contentDescription = "Make this file quieter by five"
+        volUp.contentDescription = "Make this file louder by five"
+        volDown.setOnClickListener { nudgeVol(-5) }
+        volUp.setOnClickListener { nudgeVol(5) }
+        volRow.addView(volDown, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).also { it.rightMargin = UiKit.dp(this, 8f) })
+        volRow.addView(volUp, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        set.addView(volRow, UiKit.lp(this, 4f))
+        chkMute = UiKit.check(this, "Mute this file")
+        chkMute.setOnCheckedChangeListener { _, checked ->
+            if (syncing) return@setOnCheckedChangeListener
+            val t = activeTrack() ?: return@setOnCheckedChangeListener
+            if (t.anchor) { syncSettings(); return@setOnCheckedChangeListener }
+            t.muted = checked
+            refreshLight()
+            say("File ${indexOf(t) + 1} ${if (checked) "muted" else "unmuted"}")
+        }
+        set.addView(chkMute, UiKit.lp(this, 4f))
+        set.addView(UiKit.hint(this, "100 = full, equal to the first file. 50 = half, lightly under it. 0 = off. The first file always keeps its own voice."), UiKit.lp(this, 2f))
+
+        set.addView(UiKit.subHeading(this, "Lock position"))
         markBtn = UiKit.button(this, "Add Mark", false)
+        markBtn.contentDescription = "Add Mark. Locks the selected file at its current place"
         markBtn.setOnClickListener { addMark() }
-        markCard.addView(markBtn)
-        markCard.addView(
-            UiKit.hint(this, "Locks the selected file exactly where it is. A locked file never moves again. Each file can be marked separately, also while playing."),
-            UiKit.lp(this, 8f)
-        )
-        root.addView(markCard)
+        set.addView(markBtn, UiKit.lp(this, 0f, 4f))
+        chkLock = UiKit.check(this, "Marked: this file is locked and will not move")
+        chkLock.setOnCheckedChangeListener { _, checked ->
+            if (syncing) return@setOnCheckedChangeListener
+            val t = activeTrack() ?: return@setOnCheckedChangeListener
+            if (t.anchor) { syncSettings(); return@setOnCheckedChangeListener }
+            if (checked) addMark() else unlock(t)
+        }
+        set.addView(chkLock, UiKit.lp(this))
+        removeBtn = UiKit.button(this, "Remove Selected File", false)
+        removeBtn.setOnClickListener { confirmRemove() }
+        set.addView(removeBtn, UiKit.lp(this, 10f))
+        root.addView(set)
 
-        // 6 — final play with live control
+        // ---- 4. Final play
         val finalCard = UiKit.card(this)
-        finalCard.addView(UiKit.sectionTitle(this, "6", "FINAL PLAY: LIVE CONTROL", "Final play, live control"))
+        finalCard.addView(UiKit.sectionTitle(this, "4", "FINAL PLAY: LIVE CONTROL", "Step 4. Final play with live control"))
         finalBtn = UiKit.button(this, "Final Play", true)
         finalBtn.setOnClickListener { toggleFinal() }
         finalCard.addView(finalBtn, UiKit.lp(this, 0f, 8f))
-        headInfo = UiKit.text(this, "Ready", 14f, Palette.TEXT)
+        headInfo = UiKit.text(this, "Ready", 15f, Palette.TEXT)
         finalCard.addView(headInfo)
-        totalInfo = UiKit.text(this, "", 13f, Palette.GOLD)
+        totalInfo = UiKit.text(this, "", 13.5f, Palette.GOLD)
         finalCard.addView(totalInfo, UiKit.lp(this, 4f))
         finalSeek = UiKit.slider(this)
         finalSeek.max = 1000
@@ -277,40 +384,17 @@ class MainActivity : Activity() {
             }
         })
         finalCard.addView(finalSeek, UiKit.lp(this, 6f))
+        finalCard.addView(UiKit.hint(this, "While it plays, go back to step 3: change placement, position, volume, mute or Add Mark and hear the result immediately."), UiKit.lp(this, 4f))
         root.addView(finalCard)
 
-        // 7 — volume slider
-        val volCard = UiKit.card(this)
-        volCard.addView(UiKit.sectionTitle(this, "7", "VOLUME: ALL FILES EXCEPT FIRST", "Volume, all files except the first"))
-        volValue = UiKit.text(this, "100 %", 30f, Palette.GOLD, true)
-        volValue.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        volCard.addView(volValue)
-        volInfo = UiKit.hint(this, "")
-        volCard.addView(volInfo, UiKit.lp(this, 0f, 6f))
-        volSlider = UiKit.slider(this)
-        volSlider.progressTintList = ColorStateList.valueOf(Palette.GOLD)
-        volSlider.thumbTintList = ColorStateList.valueOf(Palette.GOLD)
-        volSlider.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                if (!suppressVol) onVolumeSlider(value)
-            }
-            override fun onStartTrackingTouch(sb: SeekBar?) {}
-            override fun onStopTrackingTouch(sb: SeekBar?) {}
-        })
-        volCard.addView(volSlider, UiKit.lp(this))
-        volCard.addView(
-            UiKit.hint(this, "100: full, equal to the first file. 50: half, plays lightly under it. 0: completely off. The first file is never changed. Works live."),
-            UiKit.lp(this, 8f)
-        )
-        root.addView(volCard)
-
-        // 8 — save
+        // ---- 5. Save
         val saveCard = UiKit.card(this)
-        saveCard.addView(UiKit.sectionTitle(this, "8", "SAVE", "Save"))
+        saveCard.addView(UiKit.sectionTitle(this, "5", "SAVE", "Step 5. Save"))
         saveBtn = UiKit.button(this, "Save", true)
+        saveBtn.contentDescription = "Save. Choose Save in WAV or Save in MP3"
         saveBtn.setOnClickListener { askSave() }
         saveCard.addView(saveBtn)
-        saveCard.addView(UiKit.hint(this, "Saves the full mix as one single, gap-free file: WAV or MP3."), UiKit.lp(this, 8f))
+        saveCard.addView(UiKit.hint(this, "Saves the full mix as one continuous file, exactly as you heard it."), UiKit.lp(this, 8f))
         root.addView(saveCard)
 
         return scroll
@@ -334,7 +418,7 @@ class MainActivity : Activity() {
     private fun pickFile() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
         i.addCategory(Intent.CATEGORY_OPENABLE)
-        i.type = "*/*" // every format: nothing is filtered or rejected by extension
+        i.type = "*/*"
         i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         try {
             @Suppress("DEPRECATION")
@@ -352,6 +436,7 @@ class MainActivity : Activity() {
         val uri = data?.data
         if (resultCode != RESULT_OK || uri == null) {
             pendingReplace = false
+            say("No file chosen")
             return
         }
         try {
@@ -380,6 +465,7 @@ class MainActivity : Activity() {
     }
 
     private fun clearAll() {
+        muteStopMessage()
         player.pause()
         for (t in tracks) t.pcm?.delete()
         tracks.clear()
@@ -393,13 +479,13 @@ class MainActivity : Activity() {
             say("Maximum $MAX_FILES files")
             return
         }
+        muteStopMessage()
         player.pause()
         val t = Track(nextId++, displayName(uri), uri, tracks.isEmpty())
         tracks.add(t)
         activeIndex = tracks.size - 1
         refreshAll()
-        val ordinal = tracks.size
-        busy("Decoding file $ordinal: ${t.name}")
+        busy("Decoding file ${tracks.size}: ${t.name}. Please wait.")
         worker.execute {
             var res: Decoder.Result? = null
             try {
@@ -408,6 +494,7 @@ class MainActivity : Activity() {
             }
             val done = res
             ui.post {
+                progress.visibility = View.GONE
                 if (!tracks.contains(t)) {
                     done?.file?.delete()
                     return@post
@@ -418,23 +505,27 @@ class MainActivity : Activity() {
                     t.frames = done.frames
                     recomputeOffsets()
                     refreshAll()
-                    say("File ${tracks.indexOf(t) + 1} ready, ${fmtDur(t.durationMs)}: ${t.name}")
+                    val n = tracks.indexOf(t) + 1
+                    say(
+                        "File $n ready, ${Fmt.spoken(t.frames)} long: ${t.name}. " +
+                            if (t.anchor) "It is the base file. Now press Add Another File, or Play 1."
+                            else "It is selected. Choose how to place it in step 3, or press Play 2 to check it."
+                    )
                 } else {
                     removeInternal(t)
                     say("Could not read ${t.name} as audio, so it was not added")
                 }
-                progress.visibility = View.GONE
             }
         }
     }
 
-    // ------------------------------------------------------------------ slider logic
+    // ------------------------------------------------------------------ placement logic
 
     /**
-     * s = 100: starts exactly at the end of everything placed before it (seamless)
-     * s = 50 : starts at 0, fully on top of the first file
-     * s = 0  : plays completely before the first file
-     * The first file always stays at 0 and never moves; locked files never move.
+     * s = 100: starts exactly where everything placed before it ends (seamless merge after)
+     * s = 50 : starts at 0, fully on top of the first file (mix)
+     * s = 0  : plays completely before the first file (merge before)
+     * anything else: partial override. The first file never moves; locked files never move.
      */
     private fun recomputeOffsets() {
         if (tracks.isEmpty()) return
@@ -457,39 +548,65 @@ class MainActivity : Activity() {
         return hi
     }
 
+    private fun modeOf(slider: Int): Int = when {
+        slider >= 100 -> MODE_AFTER
+        slider <= 0 -> MODE_BEFORE
+        slider == 50 -> MODE_MIX
+        else -> MODE_OVERRIDE
+    }
+
+    private fun applyMode(t: Track, mode: Int) {
+        if (t.anchor || t.locked) return
+        t.slider = when (mode) {
+            MODE_AFTER -> 100
+            MODE_BEFORE -> 0
+            MODE_MIX -> 50
+            else -> if (t.slider in 1..99 && t.slider != 50) t.slider else 75
+        }
+        recomputeOffsets()
+        refreshLight()
+        say("${MODE_NAMES[mode]}. ${startSpoken(t)}. Mix length ${Fmt.spoken(mixTotal())}")
+    }
+
     private fun onPositionSlider(value: Int) {
         val t = activeTrack() ?: return
-        if (t.anchor) {
-            say("The first file is the base and stays fixed")
-            syncSliders()
-            return
-        }
-        if (t.locked) {
-            say("File ${indexOf(t) + 1} is marked and locked. Unlock it in its Options first")
-            syncSliders()
+        if (t.anchor || t.locked) {
+            syncSettings()
             return
         }
         t.slider = value
         recomputeOffsets()
-        posValue.text = value.toString()
-        updateTimeline()
-        updateInfoLabels()
-        updateRowTexts()
-        describeSliders(t)
+        refreshLight()
+    }
+
+    private fun nudgePos(d: Int) {
+        val t = activeTrack() ?: run { say("Import a file first"); return }
+        if (t.anchor) { say("File 1 is the base and stays fixed"); return }
+        if (t.locked) { say("This file is locked. Uncheck Marked to move it"); return }
+        val v = (t.slider + d).coerceIn(0, 100)
+        t.slider = v
+        recomputeOffsets()
+        refreshLight()
+        say("Position $v. ${MODE_NAMES[modeOf(v)]}. ${startSpoken(t)}")
     }
 
     private fun onVolumeSlider(value: Int) {
         val t = activeTrack() ?: return
         if (t.anchor) {
-            say("The first file keeps its original voice")
-            syncSliders()
+            syncSettings()
             return
         }
         t.gain = value / 100f
-        volValue.text = "$value %"
-        updateInfoLabels()
-        updateRowTexts()
-        describeSliders(t)
+        refreshLight()
+    }
+
+    private fun nudgeVol(d: Int) {
+        val t = activeTrack() ?: run { say("Import a file first"); return }
+        if (t.anchor) { say("The first file keeps its original voice"); return }
+        val v = (Math.round(t.gain * 100f) + d).coerceIn(0, 100)
+        t.gain = v / 100f
+        refreshLight()
+        say("Volume $v percent" + if (t.muted) ", but the file is muted" else "")
     }
 
     private fun addMark() {
@@ -498,13 +615,13 @@ class MainActivity : Activity() {
         if (t.frames <= 0) { say("Wait until the file is decoded"); return }
         if (t.locked) { say("File ${indexOf(t) + 1} is already marked"); return }
         t.locked = true
-        refreshAll()
-        say("File ${indexOf(t) + 1} locked at ${Fmt.signed(t.offsetFrames)}. It will not move again")
+        refreshLight()
+        say("File ${indexOf(t) + 1} locked. ${startSpoken(t)}. It will not move again")
     }
 
     private fun unlock(t: Track) {
         val i = indexOf(t)
-        if (i > 0) { // keep the file exactly where it is: derive the slider from its position
+        if (i > 0) {
             val hi = hiBefore(i)
             val off = t.offsetFrames
             t.slider = if (off >= 0) {
@@ -515,7 +632,7 @@ class MainActivity : Activity() {
         }
         t.locked = false
         recomputeOffsets()
-        refreshAll()
+        refreshLight()
         say("File ${i + 1} unlocked")
     }
 
@@ -530,13 +647,33 @@ class MainActivity : Activity() {
         refreshAll()
     }
 
+    private fun confirmRemove() {
+        val t = activeTrack() ?: run { say("There is no file to remove"); return }
+        dialog().setTitle("Remove file ${indexOf(t) + 1}?")
+            .setMessage(t.name)
+            .setPositiveButton("Remove") { _, _ -> removeTrack(t) }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     private fun removeTrack(t: Track) {
+        muteStopMessage()
         player.pause()
         val n = indexOf(t) + 1
         removeInternal(t)
         player.resetPositions()
-        say("File $n removed")
+        say("File $n removed. ${tracks.size} file(s) left")
         refreshHead()
+    }
+
+    private fun selectIndex(i: Int, announce: Boolean) {
+        if (i !in tracks.indices) return
+        activeIndex = i
+        refreshLight()
+        if (announce) {
+            val t = tracks[i]
+            say("File ${i + 1} selected: ${t.name}. " + if (t.anchor) "Base file." else "${MODE_NAMES[modeOf(t.slider)]}. ${startSpoken(t)}.")
+        }
     }
 
     // ------------------------------------------------------------------ playback
@@ -544,19 +681,31 @@ class MainActivity : Activity() {
     private fun toggleFirst() {
         val t = tracks.firstOrNull() ?: run { say("Import a file first"); return }
         if (t.frames <= 0) { say("Still decoding"); return }
-        player.toggle(MixPlayer.Mode.FIRST, t, tracks)
+        userToggle(MixPlayer.Mode.FIRST, t, "Play 1")
     }
 
     private fun toggleLast() {
         val t = tracks.lastOrNull() ?: run { say("Add a file first"); return }
         if (t.frames <= 0) { say("Still decoding"); return }
-        player.toggle(MixPlayer.Mode.LAST, t, tracks)
+        userToggle(MixPlayer.Mode.LAST, t, "Play 2, file ${tracks.size}")
     }
 
     private fun toggleFinal() {
         if (tracks.isEmpty()) { say("Import a file first"); return }
         if (tracks.all { it.frames <= 0 }) { say("Still decoding"); return }
-        player.toggle(MixPlayer.Mode.FINAL, null, tracks)
+        userToggle(MixPlayer.Mode.FINAL, null, "Final Play")
+    }
+
+    private fun userToggle(m: MixPlayer.Mode, preview: Track?, label: String) {
+        val wasThis = player.playing && player.mode == m
+        muteStopMessage()
+        player.toggle(m, preview, tracks)
+        if (wasThis) {
+            val (pos, _, _) = player.position(tracks)
+            say("$label paused at ${Fmt.spoken(pos)}")
+        } else if (player.playing) {
+            say(if (m == MixPlayer.Mode.FINAL) "Final Play started. You can change settings now and hear it live" else "$label started")
+        }
     }
 
     private fun seekToSlider(value: Int) {
@@ -568,15 +717,14 @@ class MainActivity : Activity() {
     }
 
     private fun onPlayerState() {
-        scroll.keepScreenOn = player.playing
-        if (player.playing) {
-            ui.removeCallbacks(ticker)
-            ui.post(ticker)
-        } else {
-            ui.removeCallbacks(ticker)
-        }
+        val playing = player.playing
+        scroll.keepScreenOn = playing
+        ui.removeCallbacks(ticker)
+        if (playing) ui.post(ticker)
         refreshHead()
         syncButtons()
+        if (wasPlaying && !playing && android.os.SystemClock.uptimeMillis() > quietUntil) say("Playback stopped")
+        wasPlaying = playing
     }
 
     private fun refreshHead() {
@@ -627,6 +775,10 @@ class MainActivity : Activity() {
             b.isEnabled = ok
             b.alpha = if (ok) 1f else 0.45f
         }
+        saveBtn.isEnabled = readyF
+        saveBtn.alpha = if (readyF) 1f else 0.45f
+        summaryBtn.isEnabled = tracks.isNotEmpty()
+        summaryBtn.alpha = if (tracks.isNotEmpty()) 1f else 0.45f
     }
 
     // ------------------------------------------------------------------ save
@@ -663,6 +815,7 @@ class MainActivity : Activity() {
     }
 
     private fun doExport(format: Exporter.Format) {
+        muteStopMessage()
         player.pause()
         cancelExport = false
         val stamp = android.text.format.DateFormat.format("yyyyMMdd_HHmmss", System.currentTimeMillis())
@@ -672,7 +825,7 @@ class MainActivity : Activity() {
         val tmp = File(cacheDir, name)
         val snapshot = ArrayList(tracks)
 
-        val label = UiKit.text(this, "Mixing and encoding. Please wait…", 15f, Palette.TEXT)
+        val label = UiKit.text(this, "Mixing and encoding. Please wait…", 16f, Palette.TEXT)
         val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         bar.max = 100
         bar.progressTintList = ColorStateList.valueOf(Palette.ACCENT)
@@ -687,6 +840,7 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel") { _, _ -> cancelExport = true }
             .create()
         dlg.show()
+        say("Saving $ext. Please wait")
 
         worker.execute {
             var last = -1
@@ -694,14 +848,18 @@ class MainActivity : Activity() {
                 Exporter.export(snapshot, format, tmp, { pct ->
                     if (pct != last) {
                         last = pct
-                        ui.post { bar.progress = pct; label.text = "Saving… $pct %" }
+                        ui.post {
+                            bar.progress = pct
+                            label.text = "Saving… $pct %"
+                            if (pct % 25 == 0 && pct in 1..99) say("Saving, $pct percent")
+                        }
                     }
                 }, { cancelExport })
                 val pub = publish(tmp, name, mime)
                 tmp.delete()
                 ui.post {
                     dlg.dismiss()
-                    say("Saved $name")
+                    say("Saved $name in ${pub.where}")
                     showSaved(name, mime, pub)
                 }
             } catch (e: CancellationException) {
@@ -734,9 +892,8 @@ class MainActivity : Activity() {
                 try { contentResolver.delete(uri, null, null) } catch (_: Throwable) {}
                 throw e
             }
-            return Published(uri, "Music/Audio Mixer")
+            return Published(uri, "Music, folder Audio Mixer")
         }
-        // Android 9: needs the storage permission; without it use the app's own music folder.
         val canWrite = checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         val base = if (canWrite) Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
         else (getExternalFilesDir(Environment.DIRECTORY_MUSIC) ?: filesDir)
@@ -753,7 +910,7 @@ class MainActivity : Activity() {
             }
             latch.await(4, TimeUnit.SECONDS)
         }
-        return Published(result, if (canWrite) "Music/Audio Mixer" else dir.absolutePath)
+        return Published(result, if (canWrite) "Music, folder Audio Mixer" else dir.absolutePath)
     }
 
     private fun showSaved(name: String, mime: String, pub: Published) {
@@ -796,47 +953,94 @@ class MainActivity : Activity() {
 
     private fun indexOf(t: Track): Int = tracks.indexOf(t)
 
+    private fun mixTotal(): Long {
+        val usable = tracks.filter { it.frames > 0 }
+        if (usable.isEmpty()) return 0L
+        return MixLayout.total(usable, MixLayout.origin(usable))
+    }
+
+    /** Structural change (files added or removed): rebuild the list. */
     private fun refreshAll() {
         buildRows()
-        updateTimeline()
-        updateInfoLabels()
-        syncSliders()
-        syncButtons()
-        addBtn.isEnabled = tracks.isNotEmpty()
-        addBtn.alpha = if (tracks.isNotEmpty()) 1f else 0.45f
+        refreshLight()
         refreshHead()
     }
 
-    private fun describeSliders(t: Track) {
-        val n = indexOf(t) + 1
-        val where = startSpoken(t)
-        posSlider.contentDescription = "Merge and override position of file $n. $where"
-        volSlider.contentDescription = "Volume of file $n"
-        if (Build.VERSION.SDK_INT >= 30) {
-            posSlider.stateDescription = "${t.slider} percent. $where"
-            volSlider.stateDescription = "${(t.gain * 100).toInt()} percent"
+    /** Cheap in-place update used while sliders move: never rebuilds views. */
+    private fun refreshLight() {
+        updateRowTexts()
+        updateTimeline()
+        updateInfoLabels()
+        syncSettings()
+        syncButtons()
+        addBtn.isEnabled = tracks.isNotEmpty()
+        addBtn.alpha = if (tracks.isNotEmpty()) 1f else 0.45f
+        addBtn.contentDescription = if (tracks.isEmpty()) "Add Another File. Available after the first file is imported" else "Add Another File"
+    }
+
+    private fun syncSettings() {
+        syncing = true
+        try {
+            val t = activeTrack()
+            val names = tracks.mapIndexed { i, x -> "File ${i + 1}: ${x.name}" }
+            if (names != lastNames) {
+                lastNames = names
+                fileSpinner.adapter = DarkAdapter(this, if (names.isEmpty()) listOf("No files yet") else names)
+            }
+            if (t != null && fileSpinner.selectedItemPosition != activeIndex) fileSpinner.setSelection(activeIndex, false)
+
+            val free = t != null && !t.anchor && !t.locked && t.frames > 0
+            val mode = if (t == null) MODE_MIX else modeOf(t.slider)
+            if (modeSpinner.selectedItemPosition != mode) modeSpinner.setSelection(mode, false)
+            chkAfter.isChecked = t != null && !t.anchor && mode == MODE_AFTER
+            chkBefore.isChecked = t != null && !t.anchor && mode == MODE_BEFORE
+            chkMix.isChecked = t != null && !t.anchor && mode == MODE_MIX
+            chkOver.isChecked = t != null && !t.anchor && mode == MODE_OVERRIDE
+            for (v in listOf<View>(modeSpinner, chkAfter, chkBefore, chkMix, chkOver, posSlider, posDown, posUp)) {
+                v.isEnabled = free
+                v.alpha = if (free) 1f else 0.45f
+            }
+            fileSpinner.isEnabled = tracks.isNotEmpty()
+            fileSpinner.alpha = if (tracks.isNotEmpty()) 1f else 0.45f
+
+            val volOk = t != null && !t.anchor && t.frames > 0
+            for (v in listOf<View>(volSlider, volDown, volUp, chkMute)) {
+                v.isEnabled = volOk
+                v.alpha = if (volOk) 1f else 0.45f
+            }
+            val markOk = t != null && !t.anchor && t.frames > 0
+            for (v in listOf<View>(markBtn, chkLock)) {
+                v.isEnabled = markOk
+                v.alpha = if (markOk) 1f else 0.45f
+            }
+            removeBtn.isEnabled = t != null
+            removeBtn.alpha = if (t != null) 1f else 0.45f
+
+            posSlider.progress = t?.slider ?: 50
+            val vol = Math.round((t?.gain ?: 1f) * 100f).coerceIn(0, 100)
+            volSlider.progress = if (t != null && t.anchor) 100 else vol
+            chkMute.isChecked = t?.muted ?: false
+            chkLock.isChecked = t?.locked ?: false
+            posValue.text = (t?.slider ?: 50).toString()
+            volValue.text = if (t != null && t.anchor) "100 %" else "$vol %"
+            describeSliders(t)
+        } finally {
+            syncing = false
         }
     }
 
-    private fun syncSliders() {
-        val t = activeTrack()
-        suppressPos = true
-        suppressVol = true
-        posSlider.progress = t?.slider ?: 50
-        posSlider.isEnabled = t != null && !t.anchor && !t.locked
-        posSlider.alpha = if (posSlider.isEnabled) 1f else 0.4f
-        val vol = ((t?.gain ?: 1f) * 100f).toInt().coerceIn(0, 100)
-        volSlider.progress = vol
-        volSlider.isEnabled = t != null && !t.anchor
-        volSlider.alpha = if (volSlider.isEnabled) 1f else 0.4f
-        posValue.text = (t?.slider ?: 50).toString()
-        volValue.text = if (t != null && t.anchor) "100 %" else "$vol %"
-        suppressPos = false
-        suppressVol = false
-        if (t != null) describeSliders(t)
-        else {
-            posSlider.contentDescription = "Merge and override position. Import a file first"
-            volSlider.contentDescription = "Volume. Import a file first"
+    private fun describeSliders(t: Track?) {
+        if (t == null) {
+            posSlider.contentDescription = "Position slider. Import a file first"
+            volSlider.contentDescription = "Volume slider. Import a file first"
+            return
+        }
+        val n = indexOf(t) + 1
+        posSlider.contentDescription = "Position slider of file $n, 0 to 100"
+        volSlider.contentDescription = "Volume slider of file $n, 0 to 100"
+        if (Build.VERSION.SDK_INT >= 30) {
+            posSlider.stateDescription = if (t.anchor) "Base file, fixed" else "${t.slider}. ${MODE_NAMES[modeOf(t.slider)]}. ${startSpoken(t)}"
+            volSlider.stateDescription = if (t.anchor) "Original volume" else "${Math.round(t.gain * 100f)} percent" + if (t.muted) ", muted" else ""
         }
     }
 
@@ -849,18 +1053,17 @@ class MainActivity : Activity() {
 
     private fun updateInfoLabels() {
         val t = activeTrack()
-        val origin = MixLayout.origin(tracks)
-        val total = if (tracks.none { it.frames > 0 }) 0L else MixLayout.total(tracks, origin)
+        val total = mixTotal()
         posInfo.text = when {
-            t == null -> "Import a file to start"
-            t.anchor -> "File 1 is the base track. It always starts at 00:00.0 with its original volume."
-            else -> "Adjusting file ${indexOf(t) + 1}: ${t.name}\nStart ${Fmt.signed(t.offsetFrames)} relative to file 1 · length ${fmtDur(t.durationMs)}" +
+            t == null -> "Import a file to start."
+            t.anchor -> "File 1 is the base. It always starts at 00:00.0 with its original volume."
+            else -> "File ${indexOf(t) + 1}: ${t.name}\n${MODE_NAMES[modeOf(t.slider)]} · start ${Fmt.signed(t.offsetFrames)} from file 1" +
                 if (t.locked) " · LOCKED" else ""
         }
         volInfo.text = when {
-            t == null -> "Import a file to start"
-            t.anchor -> "The first file keeps its original volume"
-            else -> "File ${indexOf(t) + 1} of ${tracks.size}: ${t.name}"
+            t == null -> "Import a file to start."
+            t.anchor -> "The first file keeps its original volume."
+            else -> "File ${indexOf(t) + 1} of ${tracks.size}" + if (t.muted) " · muted" else ""
         }
         totalInfo.text = if (tracks.isEmpty()) "" else "Mix length ${Fmt.time(total)} · ${tracks.size} file(s)"
         totalInfo.contentDescription = if (tracks.isEmpty()) "" else "Mix length ${Fmt.spoken(total)}, ${tracks.size} files"
@@ -889,17 +1092,42 @@ class MainActivity : Activity() {
         timeline.contentDescription = desc.toString()
     }
 
+    private fun summaryText(): String {
+        if (tracks.isEmpty()) return "No files yet. Press Import File to start."
+        val usable = tracks.filter { it.frames > 0 }
+        val origin = if (usable.isEmpty()) 0L else MixLayout.origin(usable)
+        val sb = StringBuilder("The mix has ${tracks.size} file(s) and lasts ${Fmt.spoken(mixTotal())}.\n\n")
+        for ((i, t) in tracks.withIndex()) {
+            sb.append("File ${i + 1}: ${t.name}.\n")
+            if (t.decoding) {
+                sb.append("Still decoding.\n\n")
+                continue
+            }
+            if (t.anchor) sb.append("Base file, starts at the beginning, original volume.\n")
+            else {
+                sb.append("${MODE_NAMES[modeOf(t.slider)]}. ${startSpoken(t)}.\n")
+                sb.append("Volume ${Math.round(t.gain * 100f)} percent${if (t.muted) ", muted" else ""}${if (t.locked) ". Locked" else ""}.\n")
+            }
+            sb.append("Plays from ${Fmt.spoken(t.offsetFrames - origin)} to ${Fmt.spoken(t.offsetFrames - origin + t.frames)} of the mix.\n\n")
+        }
+        return sb.toString().trim()
+    }
+
+    private fun showSummary() {
+        dialog().setTitle("Mix summary").setMessage(summaryText()).setPositiveButton("Close", null).show()
+    }
+
     private fun rowSpoken(i: Int, t: Track): String {
         val sb = StringBuilder("File ${i + 1}, ${t.name}. ")
-        when {
-            t.decoding -> sb.append("Decoding. ")
-            else -> {
-                sb.append("Length ${Fmt.spoken(t.frames)}. ${startSpoken(t)}. ")
-                sb.append("Volume ${((if (t.anchor) 1f else t.gain) * 100).toInt()} percent. ")
-                if (t.locked) sb.append("Marked, locked. ")
-            }
+        if (t.decoding) sb.append("Decoding. ")
+        else {
+            sb.append("Length ${Fmt.spoken(t.frames)}. ")
+            sb.append(if (t.anchor) "Base file. " else "${MODE_NAMES[modeOf(t.slider)]}. ${startSpoken(t)}. ")
+            sb.append("Volume ${Math.round((if (t.anchor) 1f else t.gain) * 100f)} percent. ")
+            if (t.muted) sb.append("Muted. ")
+            if (t.locked) sb.append("Marked, locked. ")
         }
-        sb.append(if (i == activeIndex) "Selected for the sliders." else "Double tap to select for the sliders.")
+        sb.append(if (i == activeIndex) "Selected." else "Double tap to select.")
         return sb.toString()
     }
 
@@ -911,17 +1139,14 @@ class MainActivity : Activity() {
             return
         }
         for ((i, t) in tracks.withIndex()) {
-            val selected = i == activeIndex
-            val row = UiKit.row(this)
-            row.setPadding(UiKit.dp(this, 10f), UiKit.dp(this, 6f), UiKit.dp(this, 6f), UiKit.dp(this, 6f))
-            row.background = UiKit.bg(if (selected) 0xFF20323A.toInt() else Palette.CARD2, 10f, if (selected) Palette.ACCENT else 0, 1.5f, this)
-            row.layoutParams = UiKit.lp(this, 5f)
+            val box = UiKit.row(this)
+            box.setPadding(UiKit.dp(this, 10f), UiKit.dp(this, 6f), UiKit.dp(this, 6f), UiKit.dp(this, 6f))
+            box.layoutParams = UiKit.lp(this, 5f)
 
             val info = LinearLayout(this)
             info.orientation = LinearLayout.VERTICAL
             info.isClickable = true
             info.isFocusable = true
-            info.isSelected = selected
             info.minimumHeight = UiKit.dp(this, 48f)
             info.gravity = Gravity.CENTER_VERTICAL
 
@@ -930,7 +1155,7 @@ class MainActivity : Activity() {
             badge.gravity = Gravity.CENTER
             badge.background = UiKit.bg(if (t.anchor) Palette.ACCENT else Palette.BLUE, 8f, ctx = this)
             top.addView(badge, LinearLayout.LayoutParams(UiKit.dp(this, 26f), UiKit.dp(this, 26f)).also { it.rightMargin = UiKit.dp(this, 8f) })
-            val name = UiKit.text(this, t.name, 14f, Palette.TEXT, true)
+            val name = UiKit.text(this, t.name, 14.5f, Palette.TEXT, true)
             name.maxLines = 1
             name.ellipsize = TextUtils.TruncateAt.MIDDLE
             top.addView(name, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -939,37 +1164,39 @@ class MainActivity : Activity() {
             info.addView(top)
             val meta = UiKit.text(this, "", 12.5f, Palette.MUTED)
             info.addView(meta, UiKit.lp(this, 4f))
-            info.setOnClickListener {
-                activeIndex = i
-                refreshAll()
-                say("File ${i + 1} selected")
-            }
-            row.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            info.setOnClickListener { selectIndex(i, true) }
+            box.addView(info, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
 
             val opts = UiKit.button(this, "Options", false)
             opts.contentDescription = "Options for file ${i + 1}: mark, unlock or remove"
-            opts.setOnClickListener { activeIndex = i; refreshAll(); trackMenu(t) }
-            row.addView(opts, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.leftMargin = UiKit.dp(this, 6f) })
+            opts.setOnClickListener { selectIndex(i, false); trackMenu(t) }
+            box.addView(opts, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).also { it.leftMargin = UiKit.dp(this, 6f) })
 
-            fileList.addView(row)
-            rows.add(Row(t, info, meta, tag))
+            fileList.addView(box)
+            rows.add(Row(t, box, info, meta, tag))
         }
-        updateRowTexts()
     }
 
-    /** Updates row texts in place, so dragging a slider never rebuilds views. */
+    /** Updates row texts, highlight and spoken description in place. */
     private fun updateRowTexts() {
         for ((i, r) in rows.withIndex()) {
             val t = r.track
+            val selected = i == activeIndex
+            r.box.background = UiKit.bg(
+                if (selected) 0xFF20323A.toInt() else Palette.CARD2, 10f,
+                if (selected) Palette.ACCENT else 0, 1.5f, this
+            )
+            r.info.isSelected = selected
             r.tag.text = when {
                 t.decoding -> "DECODING"
                 t.locked -> "MARKED"
+                t.muted -> "MUTED"
                 t.anchor -> "BASE"
-                else -> "FREE"
+                else -> ""
             }
             r.tag.setTextColor(if (t.locked) Palette.GOLD else Palette.MUTED)
             r.meta.text = if (t.decoding) "Decoding to a fast working format …"
-            else "${fmtDur(t.durationMs)} · start ${Fmt.signed(t.offsetFrames)} · volume ${((if (t.anchor) 1f else t.gain) * 100).toInt()}%"
+            else "${fmtDur(t.durationMs)} · ${if (t.anchor) "base" else MODE_NAMES[modeOf(t.slider)]} · start ${Fmt.signed(t.offsetFrames)} · volume ${Math.round((if (t.anchor) 1f else t.gain) * 100f)}%"
             r.info.contentDescription = rowSpoken(i, t)
         }
     }
@@ -983,7 +1210,7 @@ class MainActivity : Activity() {
                 when (opts[which]) {
                     "Unlock (remove mark)" -> unlock(t)
                     "Add Mark (lock here)" -> addMark()
-                    "Remove this file" -> removeTrack(t)
+                    "Remove this file" -> confirmRemove()
                 }
             }
             .setNegativeButton("Cancel", null)
@@ -997,22 +1224,46 @@ class MainActivity : Activity() {
         return String.format(java.util.Locale.US, "%d:%02d", totalSec / 60, totalSec % 60)
     }
 
-    private fun busy(s: String) {
-        statusText.text = s
-        progress.isIndeterminate = true
-        progress.visibility = View.VISIBLE
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+    /** User-initiated stops announce themselves; suppress the generic message for a moment. */
+    private fun muteStopMessage() {
+        quietUntil = android.os.SystemClock.uptimeMillis() + 800
     }
 
-    /** Shows the message in the status line and as a toast (screen readers announce toasts). */
+    private fun screenReaderOn(): Boolean {
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        return am.isEnabled && am.isTouchExplorationEnabled
+    }
+
+    private fun busy(s: String) {
+        progress.isIndeterminate = true
+        progress.visibility = View.VISIBLE
+        say(s)
+    }
+
+    /** Status line for everyone; spoken for screen reader users, toast for sighted users. */
+    @Suppress("DEPRECATION")
     private fun say(s: String) {
         statusText.text = s
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+        if (screenReaderOn()) statusText.announceForAccessibility(s)
+        else Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
     }
 
     companion object {
         private const val PICK = 1001
         private const val REQ_STORAGE = 77
         private const val MAX_FILES = 12
+
+        private const val MODE_AFTER = 0
+        private const val MODE_BEFORE = 1
+        private const val MODE_MIX = 2
+        private const val MODE_OVERRIDE = 3
+
+        private val MODE_NAMES = listOf("Merge after", "Merge before", "Mix", "Override")
+        private val MODE_LABELS = listOf(
+            "Merge after: plays right after the files before it, no gap",
+            "Merge before: plays completely before the first file",
+            "Mix: plays together with the first file, fully on top",
+            "Override: partly overlaps, set the amount with the slider"
+        )
     }
 }

@@ -249,7 +249,7 @@ class MixBus {
         if (scratch.size < n * Fmt.CHANNELS) scratch = ShortArray(n * Fmt.CHANNELS)
         val got = reader.read(s - offset, scratch, 0, n)
         if (got <= 0) return 0
-        val target = if (t.anchor) 1f else t.gain
+        val target = if (t.anchor) 1f else if (t.muted) 0f else t.gain
         val from = lastGain[t.id] ?: target
         lastGain[t.id] = target
         val base = ((s - absStart) * Fmt.CHANNELS).toInt()

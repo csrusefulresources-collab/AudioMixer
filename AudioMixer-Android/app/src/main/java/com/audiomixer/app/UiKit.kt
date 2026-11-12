@@ -7,7 +7,11 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.Spinner
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -107,6 +111,34 @@ object UiKit {
         return s
     }
 
+    fun check(ctx: Context, label: String): CheckBox {
+        val c = CheckBox(ctx)
+        c.text = label
+        c.setTextSize(15.5f)
+        c.setTextColor(Palette.TEXT)
+        c.buttonTintList = ColorStateList.valueOf(Palette.ACCENT)
+        c.minHeight = dp(ctx, 52f)
+        c.minimumHeight = dp(ctx, 52f)
+        c.setPadding(dp(ctx, 8f), dp(ctx, 4f), dp(ctx, 4f), dp(ctx, 4f))
+        return c
+    }
+
+    fun spinner(ctx: Context, description: String): Spinner {
+        val s = Spinner(ctx)
+        s.background = bg(Palette.CARD2, 12f, Palette.LINE, 1f, ctx)
+        s.setPopupBackgroundDrawable(bg(Palette.CARD2, 12f, Palette.ACCENT, 1f, ctx))
+        s.minimumHeight = dp(ctx, 56f)
+        s.contentDescription = description
+        return s
+    }
+
+    fun subHeading(ctx: Context, s: String): TextView {
+        val t = text(ctx, s, 15.5f, Palette.TEXT, true)
+        t.isAccessibilityHeading = true
+        t.layoutParams = lp(ctx, 14f, 4f)
+        return t
+    }
+
     fun divider(ctx: Context): View {
         val v = View(ctx)
         v.setBackgroundColor(Palette.LINE)
@@ -125,4 +157,41 @@ object UiKit {
     }
 
     fun colorAlpha(c: Int, a: Int): Int = Color.argb(a, Color.red(c), Color.green(c), Color.blue(c))
+}
+
+
+/** Dark, large, high-contrast items for combo boxes (drop-down lists). */
+class DarkAdapter(private val ctx: Context, items: List<String>) :
+    ArrayAdapter<String>(ctx, android.R.layout.simple_spinner_item, items) {
+
+    init {
+        setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+    }
+
+    private fun style(t: TextView, dropdown: Boolean) {
+        t.setTextColor(Palette.TEXT)
+        t.setTextSize(16f)
+        t.minHeight = UiKit.dp(ctx, 56f)
+        t.gravity = Gravity.CENTER_VERTICAL
+        t.isSingleLine = false
+        t.maxLines = 4
+        t.setPadding(UiKit.dp(ctx, 14f), UiKit.dp(ctx, 8f), UiKit.dp(ctx, 14f), UiKit.dp(ctx, 8f))
+        if (!dropdown) {
+            t.setCompoundDrawablesWithIntrinsicBounds(0, 0, android.R.drawable.arrow_down_float, 0)
+            t.compoundDrawableTintList = ColorStateList.valueOf(Palette.ACCENT)
+        }
+    }
+
+    override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val t = super.getView(position, convertView, parent) as TextView
+        style(t, false)
+        return t
+    }
+
+    override fun getDropDownView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val t = super.getDropDownView(position, convertView, parent) as TextView
+        style(t, true)
+        t.setBackgroundColor(Palette.CARD2)
+        return t
+    }
 }

@@ -1,4 +1,4 @@
-# Audio Mixer — Android (Kotlin) — v1.1
+# Audio Mixer — Android (Kotlin) — v1.2
 
 Every audio format in, one seamless mix out, with live controls while it plays.
 Android 9 (API 28) to Android 16 (API 36).
@@ -13,6 +13,20 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 ./gradlew assembleDebug        # debug APK  -> app/build/outputs/apk/debug/
 ```
 Or open the folder in Android Studio and press Run.
+
+## What changed in 1.2 (screen-reader / blind-user redesign)
+Screen flow is now 5 numbered steps with headings (TalkBack heading navigation jumps between them):
+1 Files · 2 Play one file · 3 Settings of the selected file · 4 Final Play (live) · 5 Save.
+- Step 3 holds everything for one file: Selected-file combo box, Placement combo box
+  (Merge after / Merge before / Mix / Override), matching check boxes, Position slider with
+  Earlier/Later buttons (±1), Volume slider with Quieter/Louder buttons (±5), Mute check box,
+  Add Mark button + Marked check box, Remove Selected File.
+- Placement is explained in words; the slider is still the exact 0–100 merge/override control.
+- Read Mix Summary: spoken overview of every file (mode, start, end, volume, locked).
+- Every action is announced (screen reader on) or shown as a toast (screen reader off):
+  file ready, placement changed, locked, play/pause position, save progress every 25 %.
+- Selecting files / moving sliders no longer rebuilds the screen, so TalkBack focus stays put.
+- Destructive actions (Replace, Remove) ask for confirmation.
 
 ## What changed in 1.1
 - Player rewritten: true Pause/Resume, no UI blocking, last half-second no longer cut off,

@@ -25,6 +25,9 @@ class Track(
     /** Linear gain applied while mixing. The first track is locked at 1.0. */
     @Volatile var gain: Float = 1f
 
+    /** Muted tracks stay in the mix but are silent (volume setting is kept). */
+    @Volatile var muted: Boolean = false
+
     /** A locked track cannot be moved any more (Add Mark). */
     @Volatile var locked: Boolean = false
 
