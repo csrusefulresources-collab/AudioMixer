@@ -125,7 +125,12 @@ class MainActivity : Activity() {
         }
         player = MixPlayer(this)
         player.setStateListener { ui.post { onPlayerState() } }
-        registerReceiver(noisy, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+        try {
+            val f = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(noisy, f, Context.RECEIVER_NOT_EXPORTED)
+            else registerReceiver(noisy, f)
+        } catch (_: Throwable) {
+        }
         setContentView(buildUi())
         refreshAll()
     }
@@ -195,6 +200,16 @@ class MainActivity : Activity() {
         root.addView(progress, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UiKit.dp(this, 5f)).also {
             it.bottomMargin = UiKit.dp(this, 8f)
         })
+
+        // Timeline overview (one lane per file, gold outline = locked, line = playhead)
+        timeline = TimelineView(this)
+        timeline.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        timeline.contentDescription = "Timeline is empty"
+        val tlWrap = LinearLayout(this)
+        tlWrap.orientation = LinearLayout.VERTICAL
+        tlWrap.background = UiKit.bg(Palette.CARD2, 12f, Palette.LINE, 1f, this)
+        tlWrap.addView(timeline, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(tlWrap, UiKit.lp(this, 0f, 12f))
 
         // ---- 1. Files
         val filesCard = UiKit.card(this)

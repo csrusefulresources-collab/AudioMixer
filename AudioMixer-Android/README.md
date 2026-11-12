@@ -1,4 +1,4 @@
-# Audio Mixer — Android (Kotlin) — v1.2
+# Audio Mixer — Android (Kotlin) — v1.2.1
 
 Every audio format in, one seamless mix out, with live controls while it plays.
 Android 9 (API 28) to Android 16 (API 36).
@@ -13,6 +13,12 @@ echo "sdk.dir=$ANDROID_HOME" > local.properties
 ./gradlew assembleDebug        # debug APK  -> app/build/outputs/apk/debug/
 ```
 Or open the folder in Android Studio and press Run.
+
+## 1.2.1 — launch crash fix
+v1.2 crashed immediately after opening: the timeline view was declared but never created
+(UninitializedPropertyAccessException in onCreate). Fixed; also registers the headphone-unplug
+receiver with an explicit flag on Android 13+. Uninstall v1.2 before installing (same signing key,
+so a normal update install also works).
 
 ## What changed in 1.2 (screen-reader / blind-user redesign)
 Screen flow is now 5 numbered steps with headings (TalkBack heading navigation jumps between them):
